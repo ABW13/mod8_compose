@@ -1,0 +1,18 @@
+Authentication
+
+This service uses token-based authentication. A client presents a bearer token
+in the Authorization header, and the server validates the signature before
+serving any protected route. Tokens expire after a fixed lifetime, so clients
+are expected to refresh rather than cache one indefinitely.
+
+Databases
+
+Structured records live in a relational store, while document embeddings live
+in a vector store. The two are kept in sync by the ingest pipeline: a write to
+the relational store schedules an embedding job for the same record.
+
+Embeddings
+
+Text is converted to vectors by a sentence-embedding model. Similar meaning
+produces similar vectors, which is what lets retrieval find a relevant passage
+even when the query shares no words with it.
