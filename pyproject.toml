@@ -1,0 +1,9 @@
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+# E/F are the meaningful ones: undefined names, unused imports.
+# BLE001 flags `except Exception`, which is intended here -- the health check
+# and the Streamlit handlers must report a failure rather than crash, and each
+# one logs or displays the error rather than swallowing it.
+ignore = ["BLE001", "E501"]

@@ -46,30 +46,29 @@ if prompt := st.chat_input("Ask a question about your documents..."):
     with st.chat_message("user"):
         st.write(prompt)
 
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            try:
-                r = requests.post(
-                    f"{API_URL}/ask", json={"question": prompt}, timeout=180
-                )
-                r.raise_for_status()
-                data = r.json()
-                st.write(data["answer"])
+    with st.chat_message("assistant"), st.spinner("Thinking..."):
+        try:
+            r = requests.post(
+                f"{API_URL}/ask", json={"question": prompt}, timeout=180
+            )
+            r.raise_for_status()
+            data = r.json()
+            st.write(data["answer"])
 
-                sources = data.get("sources", [])
-                if sources:
-                    label = data.get("confidence", "unknown")
-                    with st.expander(f"Sources ({label} confidence)"):
-                        for s in sources:
-                            st.caption(f"{s['source']} (dist: {s['distance']:.3f})")
-                            st.write(s["text"][:200] + "...")
+            sources = data.get("sources", [])
+            if sources:
+                label = data.get("confidence", "unknown")
+                with st.expander(f"Sources ({label} confidence)"):
+                    for s in sources:
+                        st.caption(f"{s['source']} (dist: {s['distance']:.3f})")
+                        st.write(s["text"][:200] + "...")
 
-                st.session_state["messages"].append(
-                    {
-                        "role": "assistant",
-                        "content": data["answer"],
-                        "sources": sources,
-                    }
-                )
-            except Exception as e:
-                st.error(f"Error: {e}")
+            st.session_state["messages"].append(
+                {
+                    "role": "assistant",
+                    "content": data["answer"],
+                    "sources": sources,
+                }
+            )
+        except Exception as e:
+            st.error(f"Error: {e}")

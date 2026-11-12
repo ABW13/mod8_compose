@@ -1,0 +1,67 @@
+name: RAG Application CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./backend
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest 'httpx<0.28'
+
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
+        env:
+          OLLAMA_URL: [localhost](http://localhost:11434)
+          CHROMA_PATH: ./test_chroma
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build backend image
+        run: docker build -t rag-backend ./backend
+
+      - name: Build frontend image
+        run: docker build -t rag-frontend ./frontend
+
+      - name: Verify images exist
+        run: |
+          docker images rag-backend
+          docker images rag-frontend
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check code formatting
+        run: |
+          pip install ruff
+          ruff check backend/ frontend/

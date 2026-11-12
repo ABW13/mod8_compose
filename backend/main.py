@@ -2,11 +2,10 @@ from pathlib import Path
 
 import chromadb
 import requests
+from config import settings
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-
-from config import settings
 
 app = FastAPI(title="RAG API")
 app.add_middleware(

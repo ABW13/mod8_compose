@@ -4,3 +4,4 @@ venv/
 .venv/
 .env
 chroma_data/
+test_chroma/
