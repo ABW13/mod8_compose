@@ -8,6 +8,20 @@ services:
       - ollama
     volumes:
       - chroma_data:/app/chroma_data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=5).status == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "8501:8501"
+    environment:
+      - API_URL=[backend](http://backend:8000)
+    depends_on:
+      - backend
 
   ollama:
     image: ollama/ollama
