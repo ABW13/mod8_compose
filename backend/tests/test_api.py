@@ -1,9 +1,8 @@
 import os
-
 import pathlib
 
 os.environ.setdefault("CHROMA_PATH", "./test_chroma")
-os.environ.setdefault("OLLAMA_URL", "[localhost](http://localhost:11434)")
+os.environ.setdefault("OLLAMA_URL", "http://localhost:11434")
 # Absolute, so the test works from any working directory.
 os.environ.setdefault(
     "DOCS_DIRECTORY",
@@ -47,3 +46,10 @@ def test_ask_returns_sources():
     assert "sources" in data
     assert "confidence" in data
     assert data["confidence"] in {"low", "medium", "high"}
+
+
+def test_stats():
+    response = client.get("/stats")
+    assert response.status_code == 200
+    data = response.json()
+    assert "document_count" in data

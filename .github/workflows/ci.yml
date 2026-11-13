@@ -30,9 +30,8 @@ jobs:
       - name: Run tests
         run: pytest tests/ -v --tb=short
         env:
-          OLLAMA_URL: [localhost](http://localhost:11434)
+          OLLAMA_URL: http://localhost:11434
           CHROMA_PATH: ./test_chroma
-
   docker:
     runs-on: ubuntu-latest
     steps:

@@ -133,3 +133,12 @@ def ask(req: AskRequest):
         confidence = "medium"
 
     return {"answer": answer, "sources": sources, "confidence": confidence}
+
+
+@app.get("/stats")
+def stats():
+    return {
+        "document_count": collection.count(),
+        "collection": settings.COLLECTION_NAME,
+        "model": settings.MODEL_NAME,
+    }

@@ -30,7 +30,7 @@ compose-demo/
     docker compose up --build
     docker compose exec ollama ollama pull llama3.2:1b
 
-Then open [localhost](http://localhost:8501)
+Then open http://localhost:8501)
 
 ## Services
 
@@ -40,8 +40,8 @@ Then open [localhost](http://localhost:8501)
 | frontend | 8501  | Streamlit chat UI                     |
 | ollama   | 11434 | Model server (generation)             |
 
-The frontend reaches the backend at [backend](http://backend:8000) and the backend reaches
-Ollama at [ollama](http://ollama:11434) — both by Compose service name. Inside a
+The frontend reaches the backend at http://backend:8000) and the backend reaches
+Ollama at http://ollama:11434) — both by Compose service name. Inside a
 container, localhost means that container, so service names are the only
 correct way to address a sibling.
 
@@ -57,7 +57,7 @@ correct way to address a sibling.
 config.py is a Settings class reading every value from the environment with
 defaults. Values live in .env:
 
-    OLLAMA_URL=[ollama](http://ollama:11434)
+    OLLAMA_URL=http://ollama:11434)
     MODEL_NAME=llama3.2:1b
     CHROMA_PATH=/app/chroma_data
     COLLECTION_NAME=documents
@@ -74,8 +74,8 @@ no --build.
 
 .env is gitignored, so a fresh clone has none and every setting falls back to
 the config.py defaults. Note that the default OLLAMA_URL is
-[localhost](http://localhost:11434) which inside a container means the container itself.
-Copy .env.example to .env and set OLLAMA_URL=[ollama](http://ollama:11434)
+http://localhost:11434) which inside a container means the container itself.
+Copy .env.example to .env and set OLLAMA_URL=http://ollama:11434)
 
 MAX_RESULTS and CONFIDENCE_THRESHOLD are loaded and used by /ask; they cap the
 number of retrieved chunks and set the confidence label.
@@ -136,7 +136,7 @@ versions. Every 1.x release currently carries the same set.
 
 ## Healthcheck
 
-    test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('[localhost](http://localhost:8000/health)', timeout=5).status == 200 else 1)"]
+    test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health)', timeout=5).status == 200 else 1)"]
 
 The python:3.11-slim image has no curl, so a curl-based check fails with
 "executable not found" on every attempt. Python's urllib needs nothing extra.
@@ -151,7 +151,7 @@ probing each candidate:
 
     for s in /mnt/wsl/docker-desktop/shared-sockets/host-services/*.sock; do
       printf "%s -> " "$(basename "$s")"
-      curl -s --max-time 2 --unix-socket "$s" [localhost](http://localhost/_ping) echo
+      curl -s --max-time 2 --unix-socket "$s" http://localhost/_ping) echo
     done
 
 The one answering OK is the Engine API. Point a context at it:

@@ -5,7 +5,7 @@ class Settings:
     """Application settings loaded from environment variables."""
 
     # Ollama configuration
-    OLLAMA_URL: str = os.environ.get("OLLAMA_URL", "[localhost](http://localhost:11434)")
+    OLLAMA_URL: str = os.environ.get("OLLAMA_URL", "http://localhost:11434")
     MODEL_NAME: str = os.environ.get("MODEL_NAME", "llama3.2:1b")
 
     # ChromaDB configuration
