@@ -1,0 +1,137 @@
+Running Local Models with Ollama
+
+Ollama runs large language models locally and exposes them over a small HTTP
+API. For a retrieval-augmented generation project it removes the need for a
+cloud account and keeps every request on your own machine, which matters when
+the corpus is internal documentation.
+
+Models and tags
+
+A model is identified by a name and an optional tag, written as name:tag. The
+tag is a variant rather than a version epoch, and different tags are often
+different sizes of the same family. `llama3.2:1b` and `llama3.2:3b` are the same
+family at roughly one and three billion parameters.
+
+The size determines both quality and cost. A one-billion-parameter model answers
+simple, well-grounded questions reliably and generates quickly even without a
+GPU. A three-billion model handles more ambiguous phrasing but takes several
+times longer per response on the same hardware. For a demonstration where you
+are asking questions of a small corpus, the smaller model is usually the better
+choice: it responds fast enough to feel interactive, and grounding in retrieved
+context compensates for its weaker world knowledge.
+
+Pulling models
+
+Models are downloaded explicitly rather than on first use:
+
+    ollama pull llama3.2:1b
+
+The download is a few hundred megabytes to several gigabytes depending on size.
+This step is separate from starting the server, and it is common to forget it:
+the server starts, answers requests about its own status, and then returns a
+not-found error when asked to generate, because no model is present.
+
+In Docker this is a frequent surprise. The Ollama image ships with no models at
+all, and a named volume for the model store means the download survives restarts
+but not the deletion of that volume. After any volume reset the models must be
+pulled again.
+
+Listing what is available
+
+    ollama list
+
+This prints the models present with their size and modification time. It is the
+quickest way to check whether a pull succeeded, and the output makes it obvious
+when the store is empty: a header row and nothing beneath it.
+
+The generate endpoint
+
+Text generation is a POST to the generate route with the model name and a
+prompt:
+
+    POST /api/generate
+    {
+      "model": "llama3.2:1b",
+      "prompt": "Answer the question using only this context...",
+      "stream": false
+    }
+
+With `stream` set to false the server returns a single JSON object containing
+the complete response in a `response` field. The alternative, streaming, returns
+newline-delimited JSON fragments as generation proceeds, which is what you want
+for a chat interface that shows tokens appearing. For a service consumed by an
+API client, the non-streaming form is simpler to handle.
+
+The API is stateless. Nothing about a previous request is remembered, so any
+conversational context must be included in the prompt on every call. This suits
+retrieval-augmented generation well, since each request builds its own prompt
+from retrieved chunks.
+
+Prompt construction
+
+How the prompt is written has more effect on answer quality than any other
+single factor. Three things reliably help.
+
+State the constraint explicitly. Instructions such as "answer using only the
+context below" reduce the model's tendency to answer from its own training data,
+which is the failure mode that makes a RAG system untrustworthy.
+
+Provide an escape hatch. Adding "if the context does not contain the answer, say
+so" gives the model a legitimate response other than inventing one. Without it,
+a model asked an unanswerable question will usually produce something plausible,
+which is worse than producing nothing.
+
+Keep the context near the question. Models attend more reliably to material close
+to the instruction. A prompt that opens with several pages of context and ends
+with the question is the conventional and usually better arrangement, though the
+reverse is worth testing if answers seem to ignore the retrieved material.
+
+A workable structure is: an instruction, the retrieved chunks separated by clear
+dividers, and the question last.
+
+Timeouts
+
+Local model inference is slow relative to ordinary HTTP calls. A one-billion
+model on CPU may take several seconds for a short answer, and considerably
+longer for a long one. The default timeout on most HTTP clients is far too short
+for this, and a request that is working correctly will appear to fail.
+
+Setting an explicit, generous timeout is therefore part of the integration
+rather than an optional refinement. For a generative endpoint, values in the
+region of two to three minutes are reasonable. Anything shorter will
+occasionally cut off legitimate responses when the machine is busy.
+
+Availability versus readiness
+
+A model server can be reachable and still unable to serve a request. The status
+endpoint that lists tags responds as soon as the server is listening, whether or
+not a model has been pulled. A health check built on that endpoint therefore
+reports success in a state where generation cannot work.
+
+The honest check is whether the configured model is present, not merely whether
+the server answers. If the health endpoint only reports reachability, that
+limitation is worth stating, because the difference between "the server is up"
+and "the model I need is available" is exactly what a user hits when a service
+looks healthy but returns nothing useful.
+
+Failure handling
+
+Errors arrive as HTTP status codes with a JSON body explaining the cause. A
+not-found error for a generation request almost always means the model is
+missing rather than that the endpoint is wrong, since a nominally correct model
+name that has not been pulled produces exactly that response.
+
+Catching the exception and including its text in the returned answer is more
+useful than a bare error message, because the message names the URL and the
+status. In a containerised setup, where the failure is usually a missing model
+or a wrong hostname, that detail is the difference between a two-minute fix and
+an hour of guessing.
+
+Why local models for this project
+
+Local generation keeps the corpus private, costs nothing per request, and works
+without network access once the model is pulled. The trade-off is quality: a
+small local model reasons less reliably than a large hosted one. For a pipeline
+that supplies retrieved context and asks for a grounded answer, that trade-off
+is usually acceptable, and it is more than acceptable for a demonstration where
+the point is the architecture rather than the eloquence.

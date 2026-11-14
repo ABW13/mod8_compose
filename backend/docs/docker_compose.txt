@@ -1,0 +1,161 @@
+Multi-Service Applications with Docker Compose
+
+Docker Compose describes a set of containers and the relationships between
+them in a single file. For an application made of a web service, a user
+interface, and a model server, it replaces a page of docker run commands with a
+declarative description of what should exist.
+
+Services
+
+Each entry under `services` becomes one container. A service either builds from
+a directory or pulls a published image:
+
+    services:
+      backend:
+        build: ./backend
+      ollama:
+        image: ollama/ollama
+
+Building from a directory uses the Dockerfile there. Pulling an image is right
+for software you are not modifying, which is the case for the model server.
+
+Service names are hostnames
+
+Compose creates a network and attaches every service to it. On that network each
+service is addressable by its own name. A backend reaching a service called
+ollama connects to the hostname `ollama`.
+
+This is the single most important thing to internalize, because the reflex is to
+write localhost. Inside a container, localhost means that container. A service
+writing to localhost is talking to itself, and the resulting connection refusal
+has nothing to do with the other service being down.
+
+    OLLAMA_URL=[ollama](http://ollama:11434)
+
+That value is correct inside Compose. The same value on a developer's machine
+running the service natively is not, which is why configuration belongs in the
+environment rather than in the code.
+
+Ports
+
+A `ports` entry publishes a container port on the host. The left side is the
+host port, the right side the container port:
+
+    ports:
+      - "8000:8000"
+
+Publishing is only needed for services you reach from outside. Inter-service
+traffic uses the container port directly and needs no mapping. Exposing a
+database port to the host is therefore unnecessary in most setups, and leaving
+it internal is both tidier and safer.
+
+A port clash is the most common start-up failure. If something else already
+holds 8000, the container fails to start with an error naming the port, and the
+fix is to change the left-hand number.
+
+Volumes
+
+A container's filesystem is ephemeral. Anything written inside it disappears
+when the container is removed. Volumes give specific paths a life independent of
+the container:
+
+    volumes:
+      - chroma_data:/app/chroma_data
+
+That line mounts the named volume chroma_data at the path the application
+writes to. Restarting or recreating the container preserves the contents.
+Deleting the volume discards them.
+
+The same applies to downloaded models. A model store on a volume survives
+restarts, which saves re-downloading several gigabytes every time the stack
+restarts. It does not survive a volume deletion, so the pull has to be repeated
+after a full reset.
+
+Note the distinction between removing containers and removing volumes. Stopping
+the stack keeps volumes. Stopping it with the volume flag deletes them. The
+difference between those two commands is the difference between data preserved
+and data gone, and it is worth knowing which you are typing.
+
+Environment and env_file
+
+Environment variables set configuration without rebuilding an image. An inline
+block works for a value or two:
+
+    environment:
+      - MODEL_NAME=llama3.2:1b
+
+For a service with many settings, a file is cleaner:
+
+    env_file: .env
+
+The file holds KEY=value lines, one per setting. Values are strings from the
+environment's point of view, so a numeric setting arrives as text and must be
+converted in code. That conversion runs at import, which means a malformed value
+fails the process at startup rather than at first use.
+
+Because the environment is applied at container creation rather than at build
+time, changing a value and recreating the containers is enough. No image rebuild
+is needed. That property is worth demonstrating: it is the reason configuration
+lives outside the image.
+
+The environment file should not be committed, since it typically holds secrets
+and always holds machine-specific values. Committing an example file with the
+keys and no values documents what is required without exposing anything.
+
+depends_on and ordering
+
+`depends_on` controls start order. A service listing another waits for that one
+to start before starting itself:
+
+    depends_on:
+      - ollama
+
+What it does not do is wait for readiness. "Started" means the container process
+launched, not that the server inside is accepting connections. A backend
+depending on a model server will start immediately after the container does and
+may make its first request before the server is listening.
+
+The consequence is a class of intermittent failure: the application works when
+you start it and check a minute later, and fails when something queries it
+immediately. The fix is either a retry in the client, or a healthcheck the
+dependent service waits for.
+
+Healthchecks
+
+A healthcheck defines a command that determines whether a container is
+functioning:
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "..."]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+The command's exit status is the answer: zero for healthy, non-zero otherwise.
+The container status then reads starting, healthy, or unhealthy, and Compose can
+gate dependencies on that state rather than merely on the process existing.
+
+The command must exist in the image. A healthcheck invoking a tool the image
+does not contain fails with an executable-not-found every interval, which looks
+like an application failure and is not one. Minimal Python images have no curl,
+so a check written with curl is broken on arrival. A Python one-liner using the
+standard library has no such dependency.
+
+Logs and debugging
+
+Logs from every service are available individually, and reading the right one is
+most of the debugging. A service that starts and stops immediately reports as
+started and then absent; its logs explain why, and the explanation is usually a
+traceback naming a missing file or an import error.
+
+Running a command inside a running container is the other main tool, and it is
+how you distinguish "the code is wrong" from "the environment is wrong" without
+rebuilding.
+
+Compose versus manual commands
+
+The equivalent of a Compose file is a series of run commands with matching
+network, volume and environment arguments. Compose is worth using because the
+relationships are declared once and are visible. The file also serves as
+documentation of how the parts fit together, which is precisely what the
+architecture section of a project README needs to convey.

@@ -1,163 +1,213 @@
-# RAG API + Ollama + Streamlit — Docker Compose Stack
+# Containerized RAG Chatbot
 
-A three-service containerized RAG application: a FastAPI backend, a Streamlit
-frontend, and Ollama for generation. All settings come from environment
-variables.
+A retrieval-augmented generation chatbot that runs entirely with
+`docker compose up`. Documents are chunked and stored in ChromaDB, relevant
+chunks are retrieved for each question, Ollama generates an answer grounded in
+those chunks, and Streamlit presents the result with citations.
 
-## Structure
+## Architecture
 
-compose-demo/
-├── docker-compose.yml
-├── .env                 (not committed)
-├── .env.example         (committed)
-├── .gitignore
-├── .dockerignore
-├── README.md
-├── backend/
-│   ├── Dockerfile
-│   ├── main.py
-│   ├── config.py
-│   ├── requirements.txt
-│   └── docs/
-│       └── sample.txt
-└── frontend/
-    ├── Dockerfile
-    ├── app.py
-    └── requirements.txt
+Three services on one Compose network, addressed by service name. The frontend
+never touches ChromaDB directly; it reads the chunk count from the backend's
+health endpoint.
 
-## Run
+| Connection | Value | Why |
+|---|---|---|
+| frontend to backend | Compose service name `backend:8000` | set in `API_URL` |
+| backend to ollama | Compose service name `ollama:11434` | set in `OLLAMA_URL` |
+| backend to ChromaDB | `PersistentClient` on `CHROMA_PATH` | mounted volume |
+| backend to corpus | `DOCS_DIRECTORY` | read at ingest time |
 
+## Request flow
+
+1. `POST /ingest` reads every `.txt` in `docs/`, splits each into overlapping
+   chunks, embeds them, and stores them with `source` and `chunk` metadata.
+2. `POST /ask` embeds the question, retrieves the closest chunks, and checks the
+   best distance against `CONFIDENCE_THRESHOLD`.
+3. If the closest chunk is within the threshold, the chunks are assembled into a
+   grounded prompt and sent to Ollama. Otherwise the question is refused.
+4. The response carries the answer, the sources with their distances, and a
+   confidence label.
+
+## Prerequisites
+
+Docker Desktop with the WSL 2 backend, and roughly 2 GB of free disk for the
+model.
+
+## Setup
+
+    git clone git@github.com:ABW13/mod8_compose.git
+    cd compose-demo
+    cp .env.example .env
     docker compose up --build
+
+Then pull the model. The Ollama image ships with **no models**, so this step is
+required -- without it the server answers requests about its own status and
+returns a not-found error when asked to generate.
+
     docker compose exec ollama ollama pull llama3.2:1b
+    docker compose exec ollama ollama list
 
-Then open http://localhost:8501)
+Then index the corpus, either from the sidebar button in the UI or directly:
 
-## Services
+    curl -X POST [localhost](http://localhost:8000/ingest)
 
-| Service  | Port  | Role                                  |
-|----------|-------|---------------------------------------|
-| backend  | 8000  | FastAPI RAG API, ChromaDB client      |
-| frontend | 8501  | Streamlit chat UI                     |
-| ollama   | 11434 | Model server (generation)             |
+## Usage
 
-The frontend reaches the backend at http://backend:8000) and the backend reaches
-Ollama at http://ollama:11434) — both by Compose service name. Inside a
-container, localhost means that container, so service names are the only
-correct way to address a sibling.
+Open the Streamlit interface on port 8501. The sidebar shows API status, Ollama
+state and the chunk count, with a Re-index button. Ask a question in the chat
+box; the answer appears with a sources expander showing which chunk supported it
+and how close the match was.
 
-## Endpoints
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/` | GET | Service name and configured model |
+| `/health` | GET | Status, Ollama reachability, chunk count |
+| `/stats` | GET | Collection and model summary |
+| `/ingest` | POST | Chunk and index the corpus |
+| `/ask` | POST | Answer a question, with sources and confidence |
 
-    GET  /               service name and configured model
-    GET  /health         status, Ollama reachability, document count
-    POST /ingest         index every .txt in docs/ (idempotent upsert)
-    POST /ask            body {"question": "..."} -> answer + sources + confidence
+Interactive API documentation is on port 8000 at `/docs`.
 
 ## Configuration
 
-config.py is a Settings class reading every value from the environment with
-defaults. Values live in .env:
+Every setting comes from the environment; nothing is hardcoded. `config.py`
+defines the `Settings` class, `.env` supplies the values, and
+`docker-compose.yml` loads it with `env_file`.
 
-    OLLAMA_URL=http://ollama:11434)
-    MODEL_NAME=llama3.2:1b
-    CHROMA_PATH=/app/chroma_data
-    COLLECTION_NAME=documents
-    MAX_RESULTS=5
-    CONFIDENCE_THRESHOLD=1.0
-    DEBUG=false
-    DOCS_DIRECTORY=/app/docs
-    OPENAI_API_KEY=
+| Variable | Default | Purpose |
+|---|---|---|
+| `OLLAMA_URL` | localhost:11434 | Model server address |
+| `MODEL_NAME` | llama3.2:1b | Model to generate with |
+| `CHROMA_PATH` | ./chroma_data | Vector store directory |
+| `COLLECTION_NAME` | documents | ChromaDB collection |
+| `MAX_RESULTS` | 3 | Chunks retrieved per question |
+| `CONFIDENCE_THRESHOLD` | 0.75 | Retrieval distance cutoff |
+| `DEBUG` | false | Print configuration at startup |
+| `DOCS_DIRECTORY` | ./docs | Corpus location |
+| `OPENAI_API_KEY` | empty | Reserved for a cloud fallback |
 
-Because docker-compose.yml uses env_file: .env, changing a setting and running
-`docker compose up -d` is enough — no image rebuild. Verified: MODEL_NAME was
-changed to llama3.2:3b and the root endpoint reflected it after a restart with
-no --build.
+Because the environment is applied when containers are created rather than when
+images are built, changing a value and recreating the containers is enough -- no
+rebuild.
 
-.env is gitignored, so a fresh clone has none and every setting falls back to
-the config.py defaults. Note that the default OLLAMA_URL is
-http://localhost:11434) which inside a container means the container itself.
-Copy .env.example to .env and set OLLAMA_URL=http://ollama:11434)
+`.env` is gitignored, so a fresh clone has none and every setting falls back to
+the `config.py` defaults. The default `OLLAMA_URL` points at localhost, which
+inside a container means the container itself. Copy `.env.example` to `.env` and
+set the Compose service names.
 
-MAX_RESULTS and CONFIDENCE_THRESHOLD are loaded and used by /ask; they cap the
-number of retrieved chunks and set the confidence label.
+## Chunking
 
-## Persistence
+Documents are split on paragraph boundaries, targeting 220 words per chunk with
+50 words of overlap. Splitting on structure rather than a fixed character window
+keeps each chunk semantically coherent, and the overlap means a passage spanning
+a boundary appears intact in at least one chunk.
 
-Two named volumes survive `docker compose down`:
+The corpus of 5 documents and 5,508 words produces **37 chunks**: 7 each from
+the ChromaDB, Docker Compose, FastAPI and Ollama guides, and 9 from the RAG
+concepts guide.
 
-    chroma_data    the ChromaDB store
-    ollama_data    pulled model weights
+Each chunk carries `source` and `chunk` metadata, which is what makes a citation
+possible.
 
-Observed readings:
+## Guardrail
 
-| Step                | ollama    | documents |
-|---------------------|-----------|-----------|
-| after /ingest       | connected | 1         |
-| after down + up     | connected | 1         |
-| after down -v + up  | connected | 0         |
+ChromaDB returns cosine **distance**: smaller means closer. After retrieval the
+best distance is compared against `CONFIDENCE_THRESHOLD`. If it exceeds the
+threshold the question is refused, instead of being answered from unrelated
+text.
 
-The count holding across down/up, then resetting after down -v, is the volume
-evidence. The third reading rules out a container that never restarted.
+The threshold was set from measurement rather than guessed:
 
-Note: `down -v` also deletes the Ollama model. Re-pull after a volume reset.
+| Question | Answerable | Best distance | Result |
+|---|---|---|---|
+| What distance metric does ChromaDB use for text? | yes | 0.470 | answered |
+| How should I choose a chunk size? | yes | 0.599 | answered |
+| How far apart should my Docker services be started? | yes | 0.603 | answered |
+| Who won the 2018 World Cup? | no | 0.891 | refused |
+| What is the capital of France? | no | 0.897 | refused |
+| How do I bake sourdough bread? | no | 0.971 | refused |
+
+Answerable questions land at or below 0.603; unanswerable ones at or above
+0.891, so the threshold sits at **0.75**, roughly the middle of that gap.
+
+Two caveats. The separation is a property of this corpus and would need
+re-measuring on a different collection. And the same value drives the
+high/medium label, which buckets at threshold times 0.6, so changing it shifts
+both the refusals and the labels.
+
+## Tests
+
+    cd backend
+    python3 -m venv .venv && .venv/bin/pip install -r requirements.txt pytest 'httpx<0.28'
+    .venv/bin/python -m pytest tests/ -v
+
+Five tests cover `/`, `/health`, `/ingest`, `/ask` and `/stats`. The ingest test
+asserts that chunks outnumber documents, so it fails if chunking stops working.
+
+CI runs on every push to `main` via `.github/workflows/ci.yml`: a test job, a job
+that builds both images, and a ruff lint job.
+
+## Project layout
+
+    compose-demo/
+    |-- docker-compose.yml
+    |-- .env                      (not committed)
+    |-- .env.example
+    |-- .github/workflows/ci.yml
+    |-- pyproject.toml            ruff configuration
+    |-- README.md
+    |-- backend/
+    |   |-- Dockerfile
+    |   |-- main.py               FastAPI routes
+    |   |-- rag.py                chunking, retrieval, generation, guardrail
+    |   |-- config.py             environment-based settings
+    |   |-- requirements.txt
+    |   |-- docs/                 corpus, 5 documents
+    |   `-- tests/test_api.py
+    `-- frontend/
+        |-- Dockerfile
+        |-- app.py                Streamlit chat interface
+        `-- requirements.txt
 
 ## Version pins
 
-    fastapi==0.109.0
-    uvicorn==0.27.0
-    chromadb==1.5.9
-    requests==2.31.0
+Backend: fastapi 0.109.0, uvicorn 0.27.0, chromadb 1.5.9, requests 2.31.0.
+Frontend: streamlit 1.67.0, numpy 2.4.6, pyarrow 26.0.1, requests 2.31.0.
 
-chromadb==1.5.9 is deliberate. main.py creates the collection with
-configuration={"hnsw": {"space": "cosine"}}, and that parameter exists only
-from chromadb 0.5.4 onward — it was added to the create-collection model in
-that release. Chroma 1.0 made configuration the documented way to set index
-options, keeping metadata={"hnsw:space": "cosine"} for backwards compatibility
-only.
+`chromadb==1.5.9` is deliberate: the collection is created with the
+`configuration` dictionary carrying an hnsw space of cosine, and that parameter
+exists only from chromadb 0.5.4 onward. The commonly cited 0.4.22 predates it and
+raises at import, before the server binds its port, which makes it look like a
+networking fault.
 
-The common tutorial pin, chromadb==0.4.22, predates the parameter and raises
-TypeError at import — before uvicorn binds port 8000, which makes it look like
-a networking fault. 1.5.9 also requires pydantic >= 2.0, matching
-fastapi==0.109.0.
+The frontend pins are the set pip resolved once the original
+`streamlit==1.31.0` constraint was removed -- that version pulled a pyarrow
+requiring NumPy 2.0+ while capping numpy below 2, so Streamlit could not import.
 
-Frontend:
+Test dependencies are pinned too: httpx below 0.28, because newer versions
+removed the client API that Starlette's TestClient wraps.
 
-    streamlit==1.67.0
-    numpy==2.4.6
-    pyarrow==26.0.1
-    requests==2.31.0
+## Persistence
 
-Streamlit was originally pinned to 1.31.0, which failed: pip resolved a
-pyarrow requiring NumPy 2.0+ while capping numpy<2, so pyarrow could not
-import and Streamlit exited 1 before binding port 8501. The pins above are the
-set pip resolved once the constraint was removed, captured with `pip freeze`.
+Two named volumes survive a plain `docker compose down`:
 
-Caveat: chromadb 1.5.9 carries four open CVE advisories with no published fix
-versions. Every 1.x release currently carries the same set.
+| Volume | Contents |
+|---|---|
+| `chroma_data` | the vector store |
+| `ollama_data` | pulled model weights |
 
-## Healthcheck
+`docker compose down -v` deletes both. After it, re-pull the model and re-index
+the corpus.
 
-    test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health)', timeout=5).status == 200 else 1)"]
+## What I would improve
 
-The python:3.11-slim image has no curl, so a curl-based check fails with
-"executable not found" on every attempt. Python's urllib needs nothing extra.
-The check queries localhost from inside the backend container — its own server.
-
-## Troubleshooting
-
-Docker Desktop on WSL: if `docker` commands fail with "Failed to initialize:
-protocol not available", the /var/run/docker.sock symlink may point at a socket
-with no listener while the live Engine API sits elsewhere. Identify it by
-probing each candidate:
-
-    for s in /mnt/wsl/docker-desktop/shared-sockets/host-services/*.sock; do
-      printf "%s -> " "$(basename "$s")"
-      curl -s --max-time 2 --unix-socket "$s" http://localhost/_ping) echo
-    done
-
-The one answering OK is the Engine API. Point a context at it:
-
-    docker context create direct --docker "host=unix://<that socket path>"
-    docker context use direct
-
-This path lives under /mnt/wsl/, which Docker Desktop rebuilds on restart, so
-the workaround may need reapplying after a reboot.
+- Chunking is paragraph-based and fixed; sentence-aware or heading-aware
+  splitting would likely improve retrieval on longer documents.
+- One embedding model serves everything; a code-specific model would suit a
+  technical corpus better.
+- The threshold is tuned to this corpus; measuring it automatically or adding a
+  reranking step would make the guardrail portable.
+- No conversation memory, so follow-up questions cannot refer to earlier turns.
+- Retrieval is single-shot; query expansion or a second pass would help when the
+  first attempt misses.

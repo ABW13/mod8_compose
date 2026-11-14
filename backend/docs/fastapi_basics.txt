@@ -1,0 +1,177 @@
+FastAPI Fundamentals
+
+FastAPI is a modern Python web framework built on Starlette for the web layer
+and Pydantic for data validation. Its central promise is that you describe your
+endpoints with ordinary Python type hints, and the framework derives request
+parsing, validation, serialization, and interactive documentation from those
+hints. Understanding why that works makes the rest of the framework predictable.
+
+Path operations
+
+An endpoint is declared with a decorator that names both the HTTP method and the
+path. `@app.get("/health")` registers a function to handle GET requests at
+/health. FastAPI supports get, post, put, patch, delete, and options. The
+decorator order matters when you have several: paths are matched in the order
+they were registered, so a catch-all route declared first will shadow every
+specific route after it.
+
+The function's return value is serialized automatically. Returning a dictionary
+produces JSON. Returning a Pydantic model produces JSON matching that model's
+schema. Returning a string produces a JSON string, which is usually not what you
+want, so returning a dictionary is the safe default for API endpoints.
+
+Path and query parameters
+
+FastAPI distinguishes the two by how you declare them. A parameter that also
+appears in the route path is a path parameter:
+
+    @app.get("/documents/{doc_id}")
+    def get_document(doc_id: str):
+        return {"id": doc_id}
+
+A parameter that does not appear in the path becomes a query parameter:
+
+    @app.get("/search")
+    def search(q: str, limit: int = 10):
+        return {"query": q, "limit": limit}
+
+Because `limit` has a default, it is optional; `q` has none, so omitting it is a
+422 validation error rather than a crash. That distinction is worth internalizing
+because it is the difference between a client mistake being reported clearly and
+the server failing unpredictably.
+
+Type hints do real work here. Declaring `limit: int` means a request supplying
+`limit=abc` is rejected before your function body runs, with a response body
+explaining exactly which field failed and why. You write no validation code.
+
+Request bodies and Pydantic models
+
+POST endpoints usually carry a JSON body. Declare it by typing a parameter with
+a Pydantic model:
+
+    from pydantic import BaseModel
+
+    class AskRequest(BaseModel):
+        question: str
+        max_results: int = 5
+
+    @app.post("/ask")
+    def ask(req: AskRequest):
+        return {"question": req.question}
+
+Pydantic validates the incoming JSON against the model. Missing required fields,
+wrong types, and malformed JSON all produce a 422 with a structured error
+listing. For anything more demanding, Pydantic's field validators let you
+enforce constraints:
+
+    from pydantic import Field
+
+    class AskRequest(BaseModel):
+        question: str = Field(min_length=1, max_length=2000)
+
+The practical benefit is that your endpoint body can assume its inputs are
+valid. Every check happens at the boundary, and the code inside stays simple.
+
+Asynchronous endpoints
+
+FastAPI supports both `def` and `async def`. A plain `def` endpoint runs in a
+threadpool, so a blocking call inside it does not stall the event loop. An
+`async def` endpoint runs on the event loop itself, so a blocking call inside it
+does stall everything else.
+
+That is the rule that matters most in practice. If your endpoint calls a
+synchronous library, such as the requests HTTP client, declare it with plain
+`def` and let FastAPI move it off the loop. Wrapping blocking work in `async def`
+without an async client is a common and unpleasant bug: the application appears
+to work under light load and becomes unusable under moderate concurrency.
+
+For a RAG service, most of the work is blocking anyway, so plain `def` endpoints
+are usually the correct choice.
+
+Dependency injection
+
+FastAPI's dependency system lets a function declare what it needs, and the
+framework supplies it. The simplest form is a function passed to `Depends`:
+
+    from fastapi import Depends
+
+    def get_settings():
+        return Settings()
+
+    @app.get("/config")
+    def read_config(settings = Depends(get_settings)):
+        return {"model": settings.MODEL_NAME}
+
+Dependencies can themselves depend on other dependencies, forming a graph that
+FastAPI resolves per request. This is where the pattern earns its keep: shared
+resources such as a database client, an authenticated user, or a configuration
+object get declared once and injected wherever needed. Tests can then override a
+dependency with a fake, without touching the endpoint under test.
+
+Application-level concerns
+
+Some behaviour belongs to the whole application rather than one endpoint.
+Middleware wraps every request: CORS handling, request timing, and logging are
+typical. FastAPI's CORSMiddleware is the standard way to permit browser clients
+on other origins to call your API, which a Streamlit frontend may need depending
+on how it is served.
+
+Lifespan handlers run code at startup and shutdown. Opening a database
+connection before the first request and closing it after the last is the
+canonical example. FastAPI's newer `lifespan` parameter replaces the older
+`@app.on_event("startup")` decorators:
+
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def lifespan(app):
+        connect()
+        yield
+        disconnect()
+
+    app = FastAPI(lifespan=lifespan)
+
+Startup work matters for a RAG service because loading an embedding model or
+opening a vector store takes time. Doing it once at startup is far better than
+doing it on every request.
+
+Error handling
+
+Raising HTTPException produces a controlled error response rather than a
+traceback:
+
+    from fastapi import HTTPException
+
+    if not found:
+        raise HTTPException(status_code=404, detail="No document matches")
+
+The detail string reaches the client, so it is part of your API's contract.
+Write it for the caller, not for yourself: "No document matches that id" is
+useful; "list index out of range" is not.
+
+Exception handlers let you customize the response shape for a whole class of
+errors. A RAG endpoint that calls an external model server will fail in
+predictable ways when that server is unavailable, and a handler that turns those
+failures into a structured 503 is friendlier than a generic 500.
+
+Automatic documentation
+
+Two routes exist by default: /docs renders an interactive interface listing every
+registered endpoint, and /openapi.json serves the machine-readable schema. Both
+are generated from the type hints and docstrings you already wrote.
+
+This is more useful than it first appears. Because the schema is derived from
+your code, it cannot drift from it. When the demonstration of a running service
+needs to show what the API does, /docs is the fastest honest answer.
+
+Common pitfalls
+
+Forgetting `response_model` on endpoints that return ORM objects or dataclasses
+leads to serialization surprises. Declaring the response model pins the contract.
+
+Declaring an endpoint as `async def` while calling blocking code is the most
+common performance mistake, and it does not show up in single-user testing.
+
+Mutating module-level state inside an endpoint is a correctness problem once
+more than one request is in flight. Configuration read at import time is fine;
+a counter incremented per request is not, without a lock.

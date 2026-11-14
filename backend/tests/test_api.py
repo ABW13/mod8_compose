@@ -33,8 +33,10 @@ def test_ingest():
     response = client.post("/ingest")
     assert response.status_code == 200
     data = response.json()
-    assert data["ingested"] >= 1
+    # Chunking splits documents, so chunks outnumber documents.
     assert data["documents"] >= 1
+    assert data["chunks"] >= data["documents"]
+    assert data["stored"] >= data["chunks"]
 
 
 def test_ask_returns_sources():

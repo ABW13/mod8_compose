@@ -1,0 +1,161 @@
+Retrieval-Augmented Generation
+
+Retrieval-augmented generation combines a search step with a generation step. A
+question is used to find relevant passages in a corpus, and those passages are
+supplied to a language model along with the question. The model answers from the
+supplied material rather than from its training data.
+
+The motivation is that a language model's knowledge is fixed at training time,
+it cannot cite where an answer came from, and it will produce a fluent answer to
+a question it cannot actually answer. Retrieval addresses all three: current
+material can be supplied, the source of each passage is known, and grounding
+makes fabrication less likely.
+
+The pipeline has four stages: chunking, embedding, retrieval, and generation.
+Each has decisions that affect answer quality, and the effects are not
+independent.
+
+Chunking
+
+Documents are split into passages before storage, because retrieval returns
+whole units and a whole document is too coarse to be useful. If a chapter is one
+chunk, every question about that chapter returns the entire chapter, and the
+model has to find the relevant sentence itself within a large context.
+
+Chunk size is a trade-off. Small chunks match questions precisely but may omit
+the surrounding material needed to understand them; a sentence alone often
+cannot be interpreted without its paragraph. Large chunks carry context but
+dilute the embedding, since a vector for five hundred words is a summary of all
+of them and may resemble the query only weakly.
+
+A common starting point is a few hundred words with deliberate overlap between
+consecutive chunks. Overlap matters because an idea that straddles a boundary
+would otherwise be split across two chunks, with neither containing the complete
+thought. Repeating the last portion of each chunk at the start of the next
+ensures that any passage spanning a boundary appears intact somewhere.
+
+Splitting on structure rather than on character count gives better results.
+Paragraph boundaries, headings, and section breaks are meaningful; a fixed
+window that cuts mid-sentence is not. If the source has structure, use it, and
+fall back to size-based splitting only within a section.
+
+Recording where each chunk came from is as important as the chunking itself. A
+filename plus an index within the file is enough for a citation, and without it
+retrieval results cannot be traced back to anything.
+
+Embeddings
+
+Each chunk is converted into a vector such that similar meanings produce nearby
+vectors. The model performing this conversion determines what "similar" means in
+your system, and the same model must be used for chunks and for queries. Mixing
+models between ingestion and search produces meaningless results.
+
+Embedding models are trained on general text and behave reasonably on most
+domains. Specialized models exist for code, scientific writing, and other
+narrow fields, and they help when the vocabulary differs substantially from
+ordinary prose.
+
+The vectors are stored alongside the text. Computing them once at ingestion is
+the point: the query is embedded at search time, but the corpus is not
+re-embedded per question.
+
+Retrieval
+
+A query is embedded and compared against every stored vector, with the closest
+matches returned. The number returned is a parameter. Too few and the answer
+lacks supporting material; too many and the prompt fills with tangential text
+that distracts the model and pushes the genuinely relevant passage further from
+the instruction.
+
+Three to five chunks is a reasonable default for a small corpus. The right
+number depends on chunk size: smaller chunks justify retrieving more of them.
+
+Distance is what the comparison produces, and smaller means closer. This
+inverting detail causes real bugs, because a threshold written as if distances
+were scores will accept everything or nothing.
+
+Metadata can filter the candidate set before ranking. Restricting to a single
+document is occasionally useful, though it also removes the ability to
+cross-reference between sources.
+
+Prompt construction
+
+The retrieved chunks and the question are assembled into a single prompt. The
+arrangement matters more than it might seem.
+
+An explicit instruction to answer from the supplied context is the primary
+control. Without it, a model may answer from training data and appear correct
+while being ungrounded, which is the failure the whole architecture exists to
+prevent.
+
+An escape clause is the second control. Telling the model to say when the
+context does not contain the answer gives it a valid response other than
+inventing one. Models are helpful by default and will usually attempt an answer;
+the instruction supplies permission not to.
+
+Separating context from question with clear markers reduces the chance of the
+model treating retrieved text as part of its instructions. This matters when the
+corpus contains text that reads like a command.
+
+Guardrails
+
+A guardrail is any mechanism that prevents the system from answering when it
+should not, or that makes its limitations visible when it does.
+
+A confidence threshold is the most direct. If the closest retrieved chunk is
+further than some distance, no relevant material was found, and the system
+should say so rather than generate from whatever came back. The threshold is
+empirical: ingest a known corpus, ask questions with known answers, and observe
+the distances for answerable and unanswerable questions. A value between the two
+distributions is what you want.
+
+A no-context fallback handles the empty case. If retrieval returns nothing, or
+everything returned is beyond the threshold, the response should be an explicit
+statement that the corpus does not cover the question. Returning a generated
+answer anyway is worse than returning nothing, because it is not distinguishable
+from a correct answer.
+
+Returning sources alongside the answer is a guardrail of a different kind. It
+does not prevent a bad answer, but it makes one detectable: a reader can see
+whether the cited passage actually supports the claim. For a system whose
+weakness is confident fabrication, verifiability is the most valuable property
+it can have.
+
+Structured responses
+
+An answer endpoint returns more than text. A workable shape is the answer, the
+list of sources with their distances, and a confidence label derived from the
+distances. The label is a convenience: it compresses a number into a word, which
+a user interface can display. It is also where a threshold becomes visible,
+since the label is a direct function of it.
+
+Keeping the distance alongside the citation is worth doing. It lets a skeptical
+reader see how close the match actually was, and during development it is the
+primary diagnostic for tuning chunking and retrieval parameters.
+
+Failure modes
+
+The dominant failure is an ungrounded answer: the model responds from training
+data as though the retrieved passages supported it. The prompt instruction
+reduces this but does not eliminate it, and the sources list is what makes it
+detectable.
+
+The opposite failure is refusing to answer questions the corpus does cover. This
+usually traces to chunking: the relevant material exists but was split in a way
+that left no chunk resembling the question. Increasing overlap or reducing chunk
+size usually helps.
+
+A third mode is retrieval returning material that is topically related but does
+not answer the question. The distances reveal it: a moderately close match that
+is not close enough is the signature, and it is the case a confidence threshold
+is designed to catch.
+
+Evaluation
+
+Measuring whether the pipeline works requires a set of questions with known
+answers in the corpus, and questions with none. Answerable questions should
+produce a grounded answer citing the right source; unanswerable ones should
+produce an explicit refusal. Running both sets after a change to chunking or
+retrieval is the only reliable way to know whether the change helped, because
+the effects of these parameters are not intuitive and improvements in one case
+frequently come with regressions in another.

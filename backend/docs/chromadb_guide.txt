@@ -1,0 +1,173 @@
+Working with ChromaDB
+
+ChromaDB is a vector database designed to sit inside an application rather than
+beside it. It stores documents alongside their embedding vectors and supports
+similarity search over them. For a retrieval-augmented generation pipeline it is
+usually the smallest moving part you can add, which is why it appears in so many
+tutorials and prototypes.
+
+Client modes
+
+ChromaDB offers three ways to run. `PersistentClient` stores data in a directory
+on the local filesystem and is the right choice for a single-process application
+or a container with a mounted volume. `EphemeralClient` keeps everything in
+memory and disappears when the process exits, which is useful in tests.
+`HttpClient` connects to a separate Chroma server, which is what you want when
+multiple processes share one store.
+
+The distinction matters in containers. A PersistentClient writing to a path that
+is not a mounted volume loses its data on every container restart, silently. If
+document counts reset unexpectedly after a restart, the path and the volume
+mount are the first things to check.
+
+Collections
+
+A collection is roughly a table: a named group of documents, each with an
+identifier, the document text, an optional metadata dictionary, and an embedding
+vector. Collections are created and opened with get_or_create_collection, which
+returns the existing collection if one of that name exists:
+
+    import chromadb
+    client = chromadb.PersistentClient(path="/app/chroma_data")
+    collection = client.get_or_create_collection("documents")
+
+The alternative, create_collection, raises if the name is taken. Using
+get_or_create makes startup idempotent, which is what you want in a service that
+may be restarted at any time.
+
+Distance metrics
+
+Every collection has a distance function, fixed when the collection is created.
+The options are l2 for Euclidean distance, ip for inner product, and cosine for
+angular distance. Cosine is the usual choice for text embeddings because
+normalized vectors differ in direction rather than magnitude, and direction is
+what carries meaning.
+
+Setting it correctly is not cosmetic. If the metric does not match how the
+embeddings were produced, search results degrade subtly rather than failing
+loudly. In current Chroma versions the setting is passed at creation:
+
+    collection = client.get_or_create_collection(
+        "documents",
+        configuration={"hnsw": {"space": "cosine"}},
+    )
+
+Older releases used a metadata key instead. The metadata form still works for
+backwards compatibility but is no longer the documented approach, and mixing the
+two across versions is a common source of confusing errors.
+
+The setting cannot be changed after creation. To switch metrics you must create
+a new collection and re-ingest, which is worth knowing before you fill one with
+a large corpus.
+
+Adding documents
+
+Documents are added with ids, documents, and optionally metadatas:
+
+    collection.add(
+        ids=["doc:guide:0"],
+        documents=["ChromaDB stores vectors alongside text."],
+        metadatas=[{"source": "guide.txt", "chunk": 0}],
+    )
+
+Ids must be unique within the collection. Adding an id that already exists
+raises, which makes re-running an ingest job fail partway through. `upsert`
+avoids that by replacing on conflict, and is almost always what you want for an
+ingest endpoint that may be called repeatedly.
+
+Embeddings are computed for you if you do not supply them. Chroma's default
+embedding function is a compact sentence-transformer model, downloaded on first
+use. That download is worth knowing about in a container: the first request can
+take noticeably longer than later ones, and an offline environment will fail at
+the first add.
+
+Metadata
+
+Metadata is a flat dictionary of strings, numbers, or booleans. It is the only
+way to attach provenance to a chunk, and provenance is what turns a retrieval
+result into a citation.
+
+For a document pipeline the useful fields are the source filename and the chunk
+index within it. Those two are enough for a user interface to say which document
+an answer came from and where inside it:
+
+    metadatas=[{"source": path.name, "chunk": i}]
+
+Metadata also supports filtering at query time, through a `where` clause. Typical
+uses include restricting search to one document, or to chunks above a certain
+position when you know later sections are more relevant. Filters are applied
+before similarity ranking, so they narrow the candidate set rather than
+post-processing results.
+
+Querying
+
+A query takes one or more query texts and returns the nearest documents:
+
+    results = collection.query(
+        query_texts=["How does authentication work?"],
+        n_results=3,
+    )
+
+Everything comes back grouped by query. Because a query can contain several
+texts, `results["documents"]` is a list of lists, one inner list per query. The
+same shape applies to `metadatas` and `distances`. For a single-query workload
+the practical pattern is to index into the first element:
+
+    docs = results["documents"][0]
+    metas = results["metadatas"][0]
+    dists = results["distances"][0]
+
+Getting this shape wrong is the most common error when first using the library.
+Indexing one level too shallow gives you a list of lists where you expected
+strings, and the failure appears later, in whatever consumed the text.
+
+Distances, not scores
+
+The values returned in `distances` are distances: smaller means more similar.
+With cosine distance, identical vectors give 0 and unrelated ones approach 2.
+This is the opposite of a similarity score, and treating a small distance as a
+weak match inverts your ranking.
+
+A practical consequence is that a threshold is a maximum, not a minimum. A
+guardrail that rejects results when the distance exceeds some value is
+expressing "nothing close enough was found":
+
+    best = min(distances)
+    if best > THRESHOLD:
+        return "no relevant context"
+
+Choosing the threshold is empirical. Ingest a known corpus, ask questions you
+know the answers to, and look at the distances that come back. A value that
+separates genuine matches from unrelated ones is what you want; there is no
+universally correct number.
+
+Counting and inspecting
+
+`collection.count()` returns the number of stored documents, which is the
+simplest health signal a service can expose. `collection.get()` retrieves
+documents by id or filter without similarity ranking, useful for inspecting what
+was actually ingested.
+
+Persistent storage and containers
+
+The directory given to PersistentClient holds a SQLite database and index files.
+In a container that directory must be a mounted volume, or the data lives only
+as long as the container does. Mounting a named volume at the same path the
+client uses is the standard arrangement, and it makes data survive both a
+container restart and a full recreation.
+
+Deleting the volume resets the store completely, including any embeddings that
+had been computed. For a corpus of any size that means re-embedding everything
+on the next ingest, which is a cost worth anticipating.
+
+Common pitfalls
+
+Passing a filter in the older `where` syntax when the newer form is expected, or
+the reverse, produces either an error or silently different results.
+
+Storing large documents as single chunks defeats the purpose of retrieval: the
+whole file comes back regardless of the question. Chunking before ingestion is
+what makes similarity search useful.
+
+Assuming a distance is a score, and building a threshold around that assumption,
+inverts the guardrail. Lower is closer.
