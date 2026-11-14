@@ -9,9 +9,7 @@ from pathlib import Path
 
 import chromadb
 import requests
-
 from config import settings
-
 
 # --- Chunking ---------------------------------------------------------------
 

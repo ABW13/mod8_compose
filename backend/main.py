@@ -1,6 +1,5 @@
 from pathlib import Path
 
-import chromadb
 import requests
 from config import settings
 from fastapi import FastAPI
