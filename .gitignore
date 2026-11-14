@@ -5,3 +5,5 @@ venv/
 .env
 chroma_data/
 test_chroma/
+.pytest_cache/
+.ruff_cache/
