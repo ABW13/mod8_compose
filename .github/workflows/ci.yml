@@ -46,8 +46,8 @@ jobs:
 
       - name: Verify images exist
         run: |
-          docker images rag-backend
-          docker images rag-frontend
+          docker image inspect rag-backend > /dev/null
+          docker image inspect rag-frontend > /dev/null
 
   lint:
     runs-on: ubuntu-latest
