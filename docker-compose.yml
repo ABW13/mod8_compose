@@ -19,7 +19,7 @@ services:
     ports:
       - "8501:8501"
     environment:
-      - API_URL=[backend](http://backend:8000)
+      - API_URL=http://backend:8000
     depends_on:
       - backend
 
