@@ -14,7 +14,7 @@ class Settings:
 
     # RAG configuration
     MAX_RESULTS: int = int(os.environ.get("MAX_RESULTS", "3"))
-    CONFIDENCE_THRESHOLD: float = float(os.environ.get("CONFIDENCE_THRESHOLD", "1.2"))
+    CONFIDENCE_THRESHOLD: float = float(os.environ.get("CONFIDENCE_THRESHOLD", "0.75"))
 
     # Application settings
     DEBUG: bool = os.environ.get("DEBUG", "false").lower() == "true"
